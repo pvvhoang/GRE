@@ -1,0 +1,105 @@
+#!/bin/bash
+#PBS -q normal
+#PBS -P eu82
+#PBS -l walltime=48:00:00
+#PBS -l ncpus=8
+#PBS -l mem=24GB
+#PBS -l jobfs=1GB
+#PBS -M VuVietHoang.Pham@unisa.edu.au
+#PBS -m abe
+#PBS -l wd
+
+#Load module(s) if required
+module load R
+# Run the executable
+# MyProgram+Arguments
+#R CMD BATCH /home/users/phamvv/pDriver/Script/100mRNAs.R
+# gadi
+export DATA=/scratch/eu82/vp8928/GRE/bi_covp02
+export OUTPUT=/scratch/eu82/vp8928/GRE/bi_covp02
+cd $OUTPUT
+# cov = 0.2
+cov=0.2
+if [ -e bi.resp.greml.out ]
+then
+    rm bi.resp.greml.out
+fi
+if [ -e bi.resp.coregreml.out ]
+then
+    rm bi.resp.coregreml.out
+fi
+for ((i=1;i<=50;i++))
+    do
+    
+    echo "binary - cov = 0.2 - i = " $i
+    
+    #i=1
+    Rscript ../random.R --cov=${cov} --seed=${i}
+    
+    ../Tool/mtg2 -p fam_10K.fam -g grm_qced_rdm_005_ukbb3_10K_processed.grm.bend.chol -matvec rnd.v -thread 30
+    # Out: grm_qced_rdm_005_ukbb3_10K_processed.grm.bend.chol.matvec
+    ../Tool/mtg2 -p fam_10K.fam -g brain.bmat.bend.chol -matvec rnd.v2 -thread 30
+    # Out: brain.bmat.bend.chol.matvec
+
+    R CMD BATCH --no-save ../stdz_gxe2.r     #permutation adjusted y
+    R CMD BATCH --no-save ../combine_ge_cor.r     #combine
+    
+    awk '{print $1,$2,$3}' sample.dat > sample_pheno.dat
+    
+    # Convert the phenotype data to binary
+    Rscript ../toBinary.R --phe="sample_pheno.dat" --kval=0.5
+    
+    # model fitting
+    # o	inside brain_greml.matlist:
+    # grm_qced_rdm_005_ukbb3_10K_processed.grm
+    # brain.bmat
+    # .	fit GREML:
+    # -d sample_pheno.dat: phenotype
+    ../Tool/mtg2 -p fam_10K.fam -mg brain_greml.matlist -d sample_pheno.dat -mod 1 -thread 100 -out brain_greml.out > brain_greml.log
+    awk 'n!=1 && $1!="LKH" {printf $2" "$3" "}; $1=="LKH" {n=1;printf $2"\n"}' brain_greml.out >> bi.resp.greml.out
+     
+    # .	fit CORE GREML:
+    # o	inside brain_coregreml.matlist:
+    # grm_qced_rdm_005_ukbb3_10K_processed.grm
+    # brain.bmat
+    # brain_grm_bmat.chol.matmat2
+    ../Tool/mtg2 -p fam_10K.fam -mg brain_coregreml.matlist -d sample_pheno.dat -mod 1 -thread 100 -out brain_coregreml.out > brain_coregreml.log
+    #awk 'n!=1 && $1!="LKH" {printf $2" "$3" "}; $1=="LKH" {n=1;printf $2"\n"}' brain_coregreml.out >> bi.resp.coregreml.out
+    
+    #++++++++++++++++++++++++
+    # estimate h2 (refer to iii. estimate functions of model parameters)
+    # Estimate proporitions of phenotypic variance explained by genetics and transcriptome,
+    # correlation between genetic and transcriptomic effects on phenotypes,
+    # and standard errors of these estimates
+    
+    # o	Prepare a file that contains variance & covariance estimates & the information matrix (i.e., var-cov matrix of model parameters).
+    # These pieces of information are inside the CORE GREML outfile, but to be readily used by MTG2, lines with 'LKH' & 'h2' need to be removed from the outfile using the following code:
+    grep -vwE '(LKH|h2)' brain_coregreml.out > brain_coregreml.out2
+    
+    # o	Prepare a do file for MTG2 to construct functions of model parameters.
+    Rscript ../createTemplate.R --inFile="brain_coregreml.out2" --outFile="brain_coregreml.do"
+    
+    # .	Estimation:
+    ../Tool/mtg2 -delta2 brain_coregreml.do > brain_coregreml.out3 
+    # o	Inside brain_coregreml.out3
+     # ******************************************************************
+     # MTG2 version 2.21 (Apr2021)
+     # ******************************************************************
+     # delta2    : brain_coregreml.do
+     # 
+     # var-cov-info matrix file: brain_coregreml.out2
+     # Ratio:  0.1337209     SE:  3.5622749E-02  p-value:  1.7416898E-04
+     # Ratio:  0.1418605     SE:  1.2971596E-02  p-value:  7.7769562E-28
+     # Cor  : -0.1435225     SE:  9.9912226E-02  p-value:  0.1508640 
+    
+    # Write h2 and se to file
+    awk 'n!=1 && $1!="h2" {printf $2" "$3" "}; $1=="h2" {n=1}' brain_coregreml.out >> bi.resp.coregreml.out
+    awk '$1=="Ratio:" {printf $2" "$4" "}; $1=="Cor" {printf $3" "$5" "}' brain_coregreml.out3 >> bi.resp.coregreml.out
+    awk '$1=="LKH" {printf $2"\n"}' brain_coregreml.out >> bi.resp.coregreml.out
+    #++++++++++++++++++++++++
+
+  done
+### Run
+### qsub /scratch/eu82/vp8928/GRE/gadi7_bi_covp02.txt
+### Output file
+### /home/users/phamvv/slurm-15689.out
